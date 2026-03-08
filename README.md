@@ -9,8 +9,7 @@ Tampermonkey userscript that reveals hidden or age-restricted media on Twitter b
 ## Installation
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
-2. Open the raw script URL:  
-   `https://raw.githubusercontent.com/suddelty/twitter-age-restriction-bypass-userscript/main/twitter-age-restriction-bypass.user.js`
+2. Open the raw script URL: [twitter-age-restriction-bypass.user.js](https://raw.githubusercontent.com/suddelty/twitter-age-restriction-bypass-userscript/main/twitter-age-restriction-bypass.user.js)
 3. Tampermonkey will detect the userscript and prompt you to install it. Click **Install**.
 
 ## Usage

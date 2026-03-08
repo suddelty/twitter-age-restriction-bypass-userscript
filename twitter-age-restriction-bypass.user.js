@@ -9,6 +9,9 @@
 // @grant        GM_xmlhttpRequest
 // @connect      api.fxtwitter.com
 // @run-at       document-idle
+// @homepageURL  https://github.com/Jesse/twitter-age-restriction-bypass-userscript
+// @updateURL   https://raw.githubusercontent.com/Jesse/twitter-age-restriction-bypass-userscript/main/twitter-age-restriction-bypass.user.js
+// @downloadURL https://raw.githubusercontent.com/Jesse/twitter-age-restriction-bypass-userscript/main/twitter-age-restriction-bypass.user.js
 // ==/UserScript==
 
 (function () {
