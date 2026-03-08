@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Age Restriction Bypass
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @author       suddelty
 // @description  Shows hidden/restricted media on Twitter/X by fetching it via the fxtwitter API.
 // @match        https://x.com/*
@@ -18,7 +18,6 @@
     'use strict';
 
     const API_BASE = 'https://api.fxtwitter.com';
-    const processed = new WeakSet();
     const cache = new Map();
     const failed = new Set();
     const queue = [];
@@ -47,6 +46,35 @@
             if (m && m[1] !== 'i') return { username: m[1], statusId: m[2] };
         }
         return getStatusFromUrl();
+    }
+
+    function getStatusFromInterstitial(interstitial, article) {
+        const parseHref = (href) => {
+            if (!href || href.includes('/photo/') || href.includes('/video/')) return null;
+            const m = href.match(/\/([^\/]+)\/status\/(\d+)/);
+            return m && m[1] !== 'i' ? { username: m[1], statusId: m[2] } : null;
+        };
+        const linkAncestor = interstitial.closest('a[href*="/status/"]');
+        if (linkAncestor) {
+            const info = parseHref(linkAncestor.getAttribute('href'));
+            if (info) return info;
+        }
+        const quoteContainer = interstitial.closest('div[role="link"]');
+        if (quoteContainer && article.contains(quoteContainer)) {
+            const timeLink = quoteContainer.querySelector('time')?.closest('a[href*="/status/"]');
+            if (timeLink) {
+                const info = parseHref(timeLink.getAttribute('href'));
+                if (info) return info;
+            }
+            for (const a of quoteContainer.querySelectorAll('a[href*="/status/"]')) {
+                const info = parseHref(a.getAttribute('href'));
+                if (info) return info;
+            }
+            const mainInfo = getStatusFromArticle(article);
+            if (mainInfo) return { ...mainInfo, useQuote: true };
+            return null;
+        }
+        return getStatusFromArticle(article);
     }
 
     function fetchTweet(username, statusId) {
@@ -80,23 +108,22 @@
         });
     }
 
-    function findInterstitial(article) {
+    function findAllInterstitials(article) {
         // holy fuck this is a mess
-        const exact = article.querySelector(
+        const exact = article.querySelectorAll(
             'div.css-175oi2r.r-1p0dtai.r-eqz5dr.r-16y2uox.r-1777fci.r-1d2f490.r-1mmae3n.r-3pj75a.r-u8s1d.r-zchlnj.r-ipm5af.r-1867qdf'
         );
-        if (exact) return exact;
+        if (exact.length) return Array.from(exact);
 
+        const results = [];
         for (const testid of [
             'tweet-media-interstitial',
             'sensitiveMediaWarning',
             'previewInterstitial'
         ]) {
-            const el = article.querySelector(`[data-testid="${testid}"]`);
-            if (el) return el;
+            article.querySelectorAll(`[data-testid="${testid}"]`).forEach(el => results.push(el));
         }
-
-        return null;
+        return results;
     }
 
     function badge(container) {
@@ -271,9 +298,8 @@
         injectMedia(mediaSlot, tweet);
     }
 
-    function handleInterstitial(article, tweet) {
-        const interstitial = findInterstitial(article);
-        if (!interstitial || !interstitial.parentElement) return false;
+    function handleInterstitial(interstitial, tweet) {
+        if (!interstitial?.parentElement) return false;
 
         const parent = interstitial.parentElement;
         const thumbContainer = interstitial.previousElementSibling;
@@ -295,23 +321,28 @@
     }
 
     async function processArticle(article) {
-        if (processed.has(article)) return;
-        processed.add(article);
+        const interstitials = findAllInterstitials(article);
+        if (!interstitials.length) return;
 
-        const interstitial = findInterstitial(article);
-        if (!interstitial) return;
+        for (const interstitial of interstitials) {
+            if (!document.contains(interstitial)) continue;
 
-        const info = getStatusFromArticle(article);
-        if (!info) return;
+            const info = getStatusFromInterstitial(interstitial, article);
+            if (!info) continue;
 
-        const tweet = await fetchTweet(info.username, info.statusId);
-        if (!tweet) return;
+            const mainTweet = await fetchTweet(info.username, info.statusId);
+            if (!mainTweet) continue;
 
-        handleInterstitial(article, tweet);
+            const quotedTweet = mainTweet.quote || mainTweet.quoted_tweet || mainTweet.quotedTweet;
+            const tweet = info.useQuote && quotedTweet ? quotedTweet : mainTweet;
+            if (!tweet?.media) continue;
+
+            handleInterstitial(interstitial, tweet);
+        }
     }
 
     function enqueue(article) {
-        if (processed.has(article)) return;
+        if (findAllInterstitials(article).length === 0) return;
         queue.push(article);
         drain();
     }
@@ -319,7 +350,7 @@
     function drain() {
         while (queue.length && activeReqs < MAX_CONCURRENT) {
             const article = queue.shift();
-            if (processed.has(article) || !document.contains(article)) continue;
+            if (!document.contains(article)) continue;
             activeReqs++;
             processArticle(article).finally(() => {
                 activeReqs--;
@@ -330,11 +361,10 @@
 
     function scan() {
         document.querySelectorAll('article[data-testid="tweet"]').forEach(a => {
-            if (!processed.has(a)) enqueue(a);
+            enqueue(a);
         });
 
         document.querySelectorAll('article:not([data-testid="tweet"])').forEach(a => {
-            if (processed.has(a)) return;
             const text = a.textContent || '';
             if (text.includes('Age-restricted') || text.includes('sensitive') ||
                 text.includes('unavailable') || text.includes('Caution') ||
