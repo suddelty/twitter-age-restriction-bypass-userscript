@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Age Restriction Bypass
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @author       suddelty
 // @description  Shows hidden/restricted media on Twitter/X by fetching it via the fxtwitter API.
 // @match        https://x.com/*
@@ -17,6 +17,15 @@
 (function () {
     'use strict';
 
+    // config //
+
+    // feel free to change these
+    const AUTOPLAY = true; //enable/disable autoplaying videos
+    const SHOW_BADGE = true; //enable/disable displaying the fxtwitter badge
+    const QUOTE_NEW_TAB = true; //enable/disable opening quoted tweets in a new tab
+
+    ////////////////////////////
+
     const API_BASE = 'https://api.fxtwitter.com';
     const cache = new Map();
     const failed = new Set();
@@ -30,51 +39,59 @@
         return m ? { username: m[1], statusId: m[2] } : null;
     }
 
+    function parseStatusHref(href) {
+        if (!href) return null;
+        if (href.includes('/photo/') || href.includes('/video/')) return null;
+        const m = href.match(/\/([^\/]+)\/status\/(\d+)/);
+        if (!m) return null;
+        return { username: m[1], statusId: m[2] };
+    }
+
     function getStatusFromArticle(article) {
         const timeEl = article.querySelector('time');
         if (timeEl) {
             const a = timeEl.closest('a[href*="/status/"]');
             if (a) {
-                const m = a.getAttribute('href').match(/\/([^\/]+)\/status\/(\d+)/);
-                if (m) return { username: m[1], statusId: m[2] };
+                const info = parseStatusHref(a.getAttribute('href'));
+                if (info) return info;
             }
         }
         for (const a of article.querySelectorAll('a[href*="/status/"]')) {
-            const href = a.getAttribute('href');
-            if (href.includes('/photo/') || href.includes('/video/')) continue;
-            const m = href.match(/\/([^\/]+)\/status\/(\d+)/);
-            if (m && m[1] !== 'i') return { username: m[1], statusId: m[2] };
+            const info = parseStatusHref(a.getAttribute('href'));
+            if (info) return info;
         }
         return getStatusFromUrl();
     }
 
     function getStatusFromInterstitial(interstitial, article) {
-        const parseHref = (href) => {
-            if (!href || href.includes('/photo/') || href.includes('/video/')) return null;
-            const m = href.match(/\/([^\/]+)\/status\/(\d+)/);
-            return m && m[1] !== 'i' ? { username: m[1], statusId: m[2] } : null;
-        };
         const linkAncestor = interstitial.closest('a[href*="/status/"]');
         if (linkAncestor) {
-            const info = parseHref(linkAncestor.getAttribute('href'));
+            const info = parseStatusHref(linkAncestor.getAttribute('href'));
             if (info) return info;
         }
+
         const quoteContainer = interstitial.closest('div[role="link"]');
         if (quoteContainer && article.contains(quoteContainer)) {
-            const timeLink = quoteContainer.querySelector('time')?.closest('a[href*="/status/"]');
-            if (timeLink) {
-                const info = parseHref(timeLink.getAttribute('href'));
-                if (info) return info;
-            }
             for (const a of quoteContainer.querySelectorAll('a[href*="/status/"]')) {
-                const info = parseHref(a.getAttribute('href'));
+                const info = parseStatusHref(a.getAttribute('href'));
                 if (info) return info;
             }
-            const mainInfo = getStatusFromArticle(article);
-            if (mainInfo) return { ...mainInfo, useQuote: true };
+            const parentInfo = getStatusFromArticle(article);
+            if (parentInfo) return { ...parentInfo, isQuote: true };
             return null;
         }
-        return getStatusFromArticle(article);
+
+        const parentInfo = getStatusFromArticle(article);
+        if (!parentInfo) return null;
+
+        const thumb = interstitial.previousElementSibling;
+        const thumbBg = thumb?.querySelector('[style*="background-image"]')
+            ?.style?.backgroundImage || '';
+        const thumbImgSrc = thumb?.querySelector('img')?.src || '';
+        const mediaIdMatch = (thumbBg + ' ' + thumbImgSrc).match(/\/media\/([A-Za-z0-9_-]+)/);
+        const thumbMediaId = mediaIdMatch ? mediaIdMatch[1] : null;
+
+        return { ...parentInfo, isQuote: false, thumbMediaId };
     }
 
     function fetchTweet(username, statusId) {
@@ -141,15 +158,14 @@
         container.appendChild(el);
     }
 
-    function injectMedia(target, tweet) {
+    function injectMedia(target, tweet, opts = {}) {
         const media = tweet.media;
         if (!media) return;
 
         const container = document.createElement('div');
         container.className = 'fxt-media';
         Object.assign(container.style, {
-            width: '100%', borderRadius: '16px', overflow: 'hidden',
-            margin: '0'
+            width: '100%', borderRadius: '16px', overflow: 'hidden', margin: '0'
         });
 
         const photos = media.photos || [];
@@ -181,21 +197,20 @@
                     width: '100%', height: '100%',
                     objectFit: 'cover', display: 'block',
                     minHeight: count > 1 ? '140px' : 'auto',
-                    maxHeight: count === 1 ? '600px' : '300px'
+                    maxHeight: opts.fullSize ? 'none' : (count === 1 ? '600px' : '300px')
                 });
                 img.loading = 'lazy';
                 if (photo.altText) img.alt = photo.altText;
 
                 a.appendChild(img);
                 wrapper.appendChild(a);
-                badge(wrapper);
+                if (SHOW_BADGE) badge(wrapper);
                 grid.appendChild(wrapper);
             });
             container.appendChild(grid);
         }
 
         videos.forEach(media => {
-            const isGif = media.type === 'gif';
             const vidWrap = document.createElement('div');
             Object.assign(vidWrap.style, {
                 position: 'relative', background: '#000',
@@ -205,11 +220,11 @@
             const vid = document.createElement('video');
             vid.controls = true;
             vid.loop = true;
-            vid.muted = true; // has to be muted so it can autoplay
-            vid.autoplay = true;
+            vid.muted = AUTOPLAY; // has to be muted so it can autoplay
+            vid.autoplay = AUTOPLAY;
             vid.playsInline = true;
             Object.assign(vid.style, {
-                width: '100%', maxHeight: '600px', display: 'block'
+                width: '100%', maxHeight: opts.fullSize ? 'none' : '600px', display: 'block', cursor: 'default'
             });
             if (media.thumbnail_url) vid.poster = media.thumbnail_url;
 
@@ -219,7 +234,7 @@
             vid.appendChild(source);
 
             vidWrap.appendChild(vid);
-            badge(vidWrap);
+            if (SHOW_BADGE) badge(vidWrap);
             container.appendChild(vidWrap);
         });
 
@@ -227,75 +242,6 @@
 
         target.innerHTML = '';
         target.appendChild(container);
-    }
-
-    function rebuildRestrictedTweet(article, tweet) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'fxt-rebuilt';
-        Object.assign(wrapper.style, {
-            padding: '12px 16px', color: '#e7e9ea',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-        });
-
-        const header = document.createElement('div');
-        Object.assign(header.style, {
-            display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px'
-        });
-
-        if (tweet.author?.avatar_url) {
-            const avatar = document.createElement('img');
-            avatar.src = tweet.author.avatar_url;
-            Object.assign(avatar.style, {
-                width: '40px', height: '40px', borderRadius: '50%', flexShrink: '0'
-            });
-            header.appendChild(avatar);
-        }
-
-        const names = document.createElement('div');
-        const displayName = document.createElement('a');
-        displayName.href = `/${tweet.author?.screen_name || ''}`;
-        displayName.textContent = tweet.author?.name || '';
-        Object.assign(displayName.style, {
-            color: '#e7e9ea', fontWeight: 'bold', fontSize: '15px',
-            textDecoration: 'none', display: 'block'
-        });
-        const handle = document.createElement('a');
-        handle.href = `/${tweet.author?.screen_name || ''}`;
-        handle.textContent = `@${tweet.author?.screen_name || ''}`;
-        Object.assign(handle.style, {
-            color: '#71767b', fontSize: '14px', textDecoration: 'none'
-        });
-        names.appendChild(displayName);
-        names.appendChild(handle);
-        header.appendChild(names);
-        wrapper.appendChild(header);
-
-        if (tweet.text) {
-            const textEl = document.createElement('div');
-            textEl.textContent = tweet.text;
-            Object.assign(textEl.style, {
-                fontSize: '15px', lineHeight: '1.4', marginBottom: '10px',
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word'
-            });
-            wrapper.appendChild(textEl);
-        }
-
-        const mediaSlot = document.createElement('div');
-        wrapper.appendChild(mediaSlot);
-
-        if (tweet.created_at) {
-            const timestamp = document.createElement('div');
-            Object.assign(timestamp.style, {
-                color: '#71767b', fontSize: '13px', marginTop: '10px'
-            });
-            timestamp.textContent = new Date(tweet.created_at).toLocaleString();
-            wrapper.appendChild(timestamp);
-        }
-
-        article.innerHTML = '';
-        article.appendChild(wrapper);
-
-        injectMedia(mediaSlot, tweet);
     }
 
     function handleInterstitial(interstitial, tweet) {
@@ -310,14 +256,139 @@
         const insertBeforeNode = thumbContainer || interstitial;
         parent.insertBefore(mediaSlot, insertBeforeNode);
 
-        if (thumbContainer) {
-            thumbContainer.remove();
-        }
-
+        if (thumbContainer) thumbContainer.remove();
         interstitial.remove();
 
-        injectMedia(mediaSlot, tweet);
+        injectMedia(mediaSlot, tweet, { fullSize: true });
         return true;
+    }
+
+    function handleQuoteInterstitial(interstitial, quotedTweet) {
+        if (!interstitial?.parentElement) return false;
+
+        let cardRoot = interstitial.closest('div[role="link"]');
+        if (!cardRoot) {
+            cardRoot = interstitial.parentElement?.parentElement;
+        }
+        if (!cardRoot) return false;
+
+        const author = quotedTweet.author || {};
+        const screenName = author.screen_name || author.username || '';
+        const displayName = author.name || screenName;
+        const tweetUrl = screenName
+            ? `https://x.com/${screenName}/status/${quotedTweet.id || ''}`
+            : null;
+
+        const card = document.createElement('div');
+        card.className = 'fxt-quote-card';
+        Object.assign(card.style, {
+            border: '1px solid rgb(47,51,54)',
+            borderRadius: '12px',
+            overflow: 'hidden',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+            color: '#e7e9ea',
+            background: '#000',
+            cursor: tweetUrl ? 'pointer' : 'default',
+        });
+        if (tweetUrl) {
+            card.addEventListener('click', e => {
+                if (!e.target.closest('a, button, video')) {
+                    if (QUOTE_NEW_TAB) {
+                        window.open(tweetUrl, '_blank');
+                    } else {
+                        location.href = tweetUrl;
+                    }
+                }
+            });
+        }
+
+        const header = document.createElement('div');
+        Object.assign(header.style, {
+            display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '10px 12px 0',
+        });
+
+        if (author.avatar_url) {
+            const av = document.createElement('img');
+            av.src = author.avatar_url;
+            Object.assign(av.style, {
+                width: '18px', height: '18px', borderRadius: '50%', flexShrink: '0',
+            });
+            header.appendChild(av);
+        }
+
+        const nameWrap = document.createElement('div');
+        Object.assign(nameWrap.style, {
+            display: 'flex', alignItems: 'baseline', gap: '4px', minWidth: 0,
+        });
+
+        const nameEl = document.createElement('a');
+        nameEl.href = screenName ? `https://x.com/${screenName}` : '#';
+        nameEl.textContent = displayName;
+        Object.assign(nameEl.style, {
+            fontWeight: '700', fontSize: '14px', color: '#e7e9ea',
+            textDecoration: 'none', whiteSpace: 'nowrap',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+        });
+        nameEl.addEventListener('click', e => e.stopPropagation());
+
+        const handleEl = document.createElement('a');
+        handleEl.href = screenName ? `https://x.com/${screenName}` : '#';
+        handleEl.textContent = `@${screenName}`;
+        Object.assign(handleEl.style, {
+            fontSize: '13px', color: '#71767b',
+            textDecoration: 'none', whiteSpace: 'nowrap',
+        });
+        handleEl.addEventListener('click', e => e.stopPropagation());
+
+        nameWrap.appendChild(nameEl);
+        nameWrap.appendChild(handleEl);
+        header.appendChild(nameWrap);
+        card.appendChild(header);
+
+        if (quotedTweet.text) {
+            const textEl = document.createElement('div');
+            textEl.textContent = quotedTweet.text;
+            Object.assign(textEl.style, {
+                fontSize: '14px', lineHeight: '1.4', padding: '4px 12px 8px',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#e7e9ea',
+            });
+            card.appendChild(textEl);
+        }
+
+        if (quotedTweet.created_at) {
+            const ts = document.createElement('div');
+            ts.textContent = new Date(quotedTweet.created_at).toLocaleString(undefined, {
+                month: 'short', day: 'numeric', year: 'numeric',
+                hour: 'numeric', minute: '2-digit',
+            });
+            Object.assign(ts.style, {
+                fontSize: '13px', color: '#71767b',
+                padding: '2px 12px 8px',
+            });
+            card.appendChild(ts);
+        }
+
+        const mediaSlot = document.createElement('div');
+        card.appendChild(mediaSlot);
+        injectMedia(mediaSlot, quotedTweet, { fullSize: true });
+
+        cardRoot.replaceWith(card);
+        return true;
+    }
+
+    function extractQuoteTweet(tweet) {
+        return tweet.quote ?? tweet.quote_tweet ?? tweet.quoted_tweet ?? tweet.quotedTweet ?? null;
+    }
+
+    function tweetHasMediaId(tweet, mediaId) {
+        if (!mediaId || !tweet?.media) return false;
+        const all = [
+            ...(tweet.media.photos || []).map(p => p.url),
+            ...(tweet.media.all || []).map(m => m.url),
+            ...(tweet.media.all || []).map(m => m.thumbnail_url).filter(Boolean),
+        ];
+        return all.some(url => url && url.includes(mediaId));
     }
 
     async function processArticle(article) {
@@ -330,14 +401,34 @@
             const info = getStatusFromInterstitial(interstitial, article);
             if (!info) continue;
 
-            const mainTweet = await fetchTweet(info.username, info.statusId);
-            if (!mainTweet) continue;
+            let tweet = await fetchTweet(info.username, info.statusId);
+            if (!tweet) continue;
 
-            const quotedTweet = mainTweet.quote || mainTweet.quoted_tweet || mainTweet.quotedTweet;
-            const tweet = info.useQuote && quotedTweet ? quotedTweet : mainTweet;
-            if (!tweet?.media) continue;
+            const quotedTweet = extractQuoteTweet(tweet);
+            let isQuoteTweet = false;
 
-            handleInterstitial(interstitial, tweet);
+            if (info.isQuote) {
+                if (!quotedTweet) continue;
+                tweet = quotedTweet;
+                isQuoteTweet = true;
+            } else if (quotedTweet) {
+                const { thumbMediaId } = info;
+                const parentHasIt = tweetHasMediaId(tweet, thumbMediaId);
+                const quoteHasIt = tweetHasMediaId(quotedTweet, thumbMediaId);
+
+                if (quoteHasIt || (!parentHasIt && !tweet.media)) {
+                    tweet = quotedTweet;
+                    isQuoteTweet = true;
+                }
+            }
+
+            if (!tweet.media) continue;
+
+            if (isQuoteTweet) {
+                handleQuoteInterstitial(interstitial, tweet);
+            } else {
+                handleInterstitial(interstitial, tweet);
+            }
         }
     }
 
@@ -360,9 +451,7 @@
     }
 
     function scan() {
-        document.querySelectorAll('article[data-testid="tweet"]').forEach(a => {
-            enqueue(a);
-        });
+        document.querySelectorAll('article[data-testid="tweet"]').forEach(a => enqueue(a));
 
         document.querySelectorAll('article:not([data-testid="tweet"])').forEach(a => {
             const text = a.textContent || '';
@@ -377,10 +466,7 @@
     function scheduleScan() {
         if (scanPending) return;
         scanPending = true;
-        requestAnimationFrame(() => {
-            scanPending = false;
-            scan();
-        });
+        requestAnimationFrame(() => { scanPending = false; scan(); });
     }
 
     if (document.readyState === 'loading') {
@@ -389,9 +475,7 @@
         scan();
     }
 
-    new MutationObserver(scheduleScan).observe(document.body, {
-        childList: true, subtree: true
-    });
+    new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true });
 
     console.log('[Age Restriction Bypass] Active');
 })();
