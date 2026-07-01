@@ -2,6 +2,10 @@
 
 Tampermonkey userscript that reveals hidden or age-restricted media on Twitter by fetching it through the [fxtwitter](https://fxtwitter.com) API. When you encounter a tweet with blurred or blocked images/videos, the script automatically replaces the interstitial with the actual media.
 
+## Known Issues
+- Quote Tweets are broken.
+- Replies with hidden media are broken.
+
 ## Requirements
 
 - A userscript manager: [Tampermonkey](https://www.tampermonkey.net/)
@@ -20,4 +24,4 @@ No configuration needed. Once installed, the script runs automatically:
 - When you see a tweet with age-restricted or sensitive media (blurred preview, "Caution" warning, etc.), the script fetches the media via fxtwitter and replaces the placeholder.
 - Unblocked media shows a small **fxtwitter** badge in the corner.
 
-The script processes tweets in the feed as you scroll and keeps a cache to avoid repeated API calls.
+The script processes tweets in the feed as you scroll and keeps a cache in memory to avoid repeated API calls.
